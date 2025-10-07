@@ -9,29 +9,21 @@ import { QRCodeCanvas } from "qrcode.react";
 import * as XLSX from "xlsx";
 
 import { useAdmin } from "../../hooks/useAdmin";
-import { uploadFileToIpfsViaVercel, toGatewayUrl } from "../../lib/ipfs-vercel";
+import { uploadFileToIpfsViaApi, toGatewayUrl } from "../../lib/ipfs";
 
 const RPC = import.meta.env.VITE_RPC_URL || "https://api.devnet.solana.com";
 const connection = new web3.Connection(RPC, "confirmed");
-// Use the address embedded in your IDL
+
+// use the address embedded in your IDL
 const PROGRAM_ID = new web3.PublicKey(idl.address);
 
 const shorten = (k) => (k ? `${k.slice(0, 4)}…${k.slice(-4)}` : "");
+const isImage = (type) => /^image\//.test(type || "");
 
-// UI tokens
 const panelCard =
   "rounded-2xl border border-white/20 bg-white/60 p-6 shadow-xl ring-1 ring-black/5 backdrop-blur-xl dark:border-white/10 dark:bg-slate-900/40";
 const headingGrad =
   "bg-gradient-to-r from-indigo-600 via-violet-600 to-cyan-500 bg-clip-text text-transparent";
-
-// === PDF constraints ===
-const MAX_PDF_BYTES = 2 * 1024 * 1024; // 2 MB
-const isPdfFile = (f) => {
-  if (!f) return false;
-  const mime = (f.type || "").toLowerCase();
-  const name = (f.name || "").toLowerCase();
-  return mime === "application/pdf" || name.endsWith(".pdf");
-};
 
 export default function AdminAddCertificate() {
   const wallet = useWallet();
@@ -44,6 +36,8 @@ export default function AdminAddCertificate() {
 
   const program = useMemo(() => {
     if (!provider) return null;
+    // new Program(idl, provider) is okay, but ensure the Program has PROGRAM_ID implicitly
+    // using explicit PROGRAM_ID is also fine:
     return new Program(idl, provider);
   }, [provider]);
 
@@ -61,11 +55,12 @@ export default function AdminAddCertificate() {
   });
 
   const [file, setFile] = useState(null);
+  const [filePreview, setFilePreview] = useState("");
   const [fileHashHex, setFileHashHex] = useState("");
 
   const [pda, setPda] = useState(null);
   const [fileUriSaved, setFileUriSaved] = useState("");     // ipfs://CID
-  const [fileUrlGateway, setFileUrlGateway] = useState(""); // https gateway
+  const [fileUrlGateway, setFileUrlGateway] = useState(""); // https://gateway/.../CID
 
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState("");
@@ -79,7 +74,7 @@ export default function AdminAddCertificate() {
     return () => clearInterval(t);
   }, []);
 
-  // PDA preview
+  // PDA preview — FIX: use PROGRAM_ID
   const pdaPreview = useMemo(() => {
     try {
       if (!form.nomor_ijazah) return "";
@@ -98,7 +93,7 @@ export default function AdminAddCertificate() {
     [pda]
   );
 
-  // hash helpers
+  // hash helper (hex)
   async function sha256FileHex(f) {
     const buf = await f.arrayBuffer();
     const hash = await crypto.subtle.digest("SHA-256", buf);
@@ -106,36 +101,31 @@ export default function AdminAddCertificate() {
       .map((b) => b.toString(16).padStart(2, "0"))
       .join("");
   }
+
+  // hash helper (bytes)
   async function sha256FileBytes(f) {
     const buf = await f.arrayBuffer();
     const hash = await crypto.subtle.digest("SHA-256", buf);
     return new Uint8Array(hash);
   }
 
-  // ===== File pick with validation (PDF only, <= 2MB) =====
   async function onPickFile(f) {
     if (!f) {
       setFile(null);
+      setFilePreview("");
       setFileHashHex("");
       return;
     }
-    // Validate
-    if (!isPdfFile(f)) {
-      setError("Only PDF files are allowed.");
-      setFile(null);
-      setFileHashHex("");
-      return;
-    }
-    if (f.size > MAX_PDF_BYTES) {
-      setError("File too large. Max 2 MB.");
-      setFile(null);
-      setFileHashHex("");
-      return;
-    }
-    setError("");
     setFile(f);
 
-    // Compute hash (non-blocking UI)
+    if (isImage(f.type)) {
+      const reader = new FileReader();
+      reader.onload = () => setFilePreview(reader.result?.toString() || "");
+      reader.readAsDataURL(f);
+    } else {
+      setFilePreview("");
+    }
+
     try {
       const hex = await sha256FileHex(f);
       setFileHashHex(hex);
@@ -151,7 +141,6 @@ export default function AdminAddCertificate() {
   };
   const onDragOver = (e) => e.preventDefault();
 
-  // form changes
   const onChange = (e) => {
     const { name, value } = e.target;
     setForm((f) => ({ ...f, [name]: value }));
@@ -205,12 +194,6 @@ export default function AdminAddCertificate() {
       if (!isAdmin) throw new Error("Not authorized (wallet is not admin)");
       if (!adminPda) throw new Error("Admin PDA not available");
 
-      // Re-validate file (safety)
-      if (file) {
-        if (!isPdfFile(file)) throw new Error("Attachment must be a PDF.");
-        if (file.size > MAX_PDF_BYTES) throw new Error("Attachment exceeds 2 MB.");
-      }
-
       // prepare file hash bytes (zeros if no file)
       let fileHashBytes = new Uint8Array(32); // default zeros
       let ipfsUri = "";
@@ -219,9 +202,9 @@ export default function AdminAddCertificate() {
       if (file && file.size) {
         fileHashBytes = await sha256FileBytes(file);
 
-        // Upload to IPFS (via your vercel route)
-        const up = await uploadFileToIpfsViaVercel(file);
-        ipfsUri = up.ipfsUri;        // ipfs://CID (stored on-chain)
+        // Upload to IPFS (Pinata) via API route
+        const up = await uploadFileToIpfsViaApi(file);
+        ipfsUri = up.ipfsUri;        // ipfs://CID (to store on-chain)
         gatewayUrl = up.gatewayUrl;  // https link for UI
       }
 
@@ -241,8 +224,8 @@ export default function AdminAddCertificate() {
           form.nama,
           String(form.nomor_ijazah),
           form.operator_name,
-          ipfsUri,                    // ipfs://CID
-          Array.from(fileHashBytes)   // 32 bytes
+          ipfsUri,                    // <- store ipfs://CID
+          Array.from(fileHashBytes)   // <- 32 bytes
         )
         .accounts({
           certificate: certPda,
@@ -292,6 +275,7 @@ export default function AdminAddCertificate() {
       operator_name: "",
     });
     setFile(null);
+    setFilePreview("");
     setFileHashHex("");
     setPda(null);
     setFileUriSaved("");
@@ -301,7 +285,7 @@ export default function AdminAddCertificate() {
     setStep(0);
   };
 
-  // ===== Excel helpers =====
+  // Excel helpers
   const [excelRows, setExcelRows] = useState([]);
   const [selectedRowIndex, setSelectedRowIndex] = useState(-1);
   const handleExcelImport = (e) => {
@@ -345,7 +329,6 @@ export default function AdminAddCertificate() {
     e.target.value = null; // allow re-upload
   };
 
-  // ---------- UI ----------
   return (
     <div className="mx-auto max-w-6xl px-4 sm:px-6">
       {/* Header */}
@@ -402,7 +385,7 @@ export default function AdminAddCertificate() {
                           program_studi: String(row["Program Studi"] ?? row["program studi"] ?? "").trim(),
                           universitas: String(row["Universitas"] ?? row["universitas"] ?? "").trim(),
                           kode_batch: String(row["Kode Batch"] ?? row["kode batch"] ?? "").trim(),
-                          nomor_ijazah: String(row["Nomor Ijazah"] ?? row["nomor ijazah"] ?? row["Nomor Ijasah"] ?? row["nomor ijasah"] ?? "").trim(),
+                          nomor_ijazah: String(row["Nomor Ijasah"] ?? row["nomor ijasah"] ?? "").trim(),
                           operator_name: String(row["Petugas Operator"] ?? row["petugas operator"] ?? "").trim(),
                         };
                         setForm((prev) => ({ ...prev, ...mapped }));
@@ -418,6 +401,7 @@ export default function AdminAddCertificate() {
                           {val}
                         </td>
                       ))}
+
                       <td className="px-3 py-2">
                         <button
                           onClick={(e) => {
@@ -429,7 +413,7 @@ export default function AdminAddCertificate() {
                               program_studi: String(row["Program Studi"] ?? row["program studi"] ?? "").trim(),
                               universitas: String(row["Universitas"] ?? row["universitas"] ?? "").trim(),
                               kode_batch: String(row["Kode Batch"] ?? row["kode batch"] ?? "").trim(),
-                              nomor_ijazah: String(row["Nomor Ijazah"] ?? row["nomor ijazah"] ?? row["Nomor Ijasah"] ?? row["nomor ijasah"] ?? "").trim(),
+                              nomor_ijazah: String(row["Nomor Ijazah"] ?? row["nomor ijazah"] ?? row["nomor ijasah"] ?? "").trim(),
                               operator_name: String(row["Petugas Operator"] ?? row["petugas operator"] ?? "").trim(),
                             };
                             setForm((prev) => ({ ...prev, ...mapped }));
@@ -453,7 +437,7 @@ export default function AdminAddCertificate() {
       )}
 
       {/* Import Excel Button */}
-      <label className="inline-flex cursor-pointer items-center gap-2 rounded-md bg-gray-100 px-3 py-1.5 text-sm font-medium text-gray-700 hover:bg-gray-200 dark:bg-slate-800 dark:text-gray-300 dark:hover:bg-slate-700">
+      <label className="inline-flex items-center gap-2 rounded-md bg-gray-100 px-3 py-1.5 text-sm font-medium text-gray-700 hover:bg-gray-200 dark:bg-slate-800 dark:text-gray-300 dark:hover:bg-slate-700 cursor-pointer">
         <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
         </svg>
@@ -535,7 +519,7 @@ export default function AdminAddCertificate() {
       <div className={`${panelCard} mt-6`}>
         {/* STEP 0 */}
         {step === 0 && (
-          <form
+         <form
             onSubmit={(e) => {
               e.preventDefault();
               goNext();
@@ -709,76 +693,41 @@ export default function AdminAddCertificate() {
           </form>
         )}
 
-        {/* STEP 1 (PDF only, <= 2MB) */}
+        {/* STEP 1 */}
         {step === 1 && (
           <div className="space-y-5">
-            <div className="flex items-center justify-between">
-              <div>
-                <h3 className="text-base font-semibold text-gray-900 dark:text-gray-100">
-                  Attachment (Optional)
-                </h3>
-                <p className="mt-1 text-sm text-gray-600 dark:text-gray-300">
-                  Attach a <span className="font-semibold">PDF</span> (max 2 MB). We’ll compute a SHA-256 hash and upload after you approve the transaction.
-                </p>
-              </div>
-              {file && (
-                <span className="inline-flex items-center rounded-full border border-emerald-400/40 bg-emerald-500/10 px-2.5 py-1 text-xs font-semibold text-emerald-700 dark:text-emerald-300">
-                  Locked after selection
-                </span>
-              )}
+            <div>
+              <h3 className={`text-base font-semibold ${headingGrad}`}>Attachment (Optional)</h3>
+              <p className="mt-1 text-sm text-gray-600 dark:text-gray-300">
+                Attach a PDF/Image of the certificate. Hash is computed client-side before upload.
+              </p>
             </div>
 
             <div
-              onDrop={file ? undefined : onDrop}
-              onDragOver={file ? undefined : onDragOver}
-              className={[
-                "relative flex min-h-[160px] cursor-pointer flex-col items-center justify-center rounded-lg border-2 border-dashed p-6 text-center transition",
-                "border-gray-300 bg-gray-50 hover:border-indigo-400 hover:bg-indigo-50/40",
-                file ? "pointer-events-none opacity-60" : "",
-              ].join(" ")}
-              onClick={() => !file && document.getElementById("fileInputHidden")?.click()}
-              aria-disabled={!!file}
+              onDrop={onDrop}
+              onDragOver={onDragOver}
+              className="flex min-h-[160px] cursor-pointer flex-col items-center justify-center rounded-2xl border-2 border-dashed border-white/30 bg-white/40 p-6 text-center transition hover:border-cyan-400/60 hover:bg-white/60 dark:border-white/10 dark:bg-slate-900/30 dark:hover:border-cyan-400/40"
+              onClick={() => document.getElementById("fileInputHidden")?.click()}
             >
               <input
                 id="fileInputHidden"
                 name="file"
                 type="file"
-                accept="application/pdf,.pdf"
+                accept=".pdf,image/*"
                 className="hidden"
                 onChange={onFileInput}
-                disabled={!!file}
               />
-
-              {!file ? (
-                <>
-                  <svg className="h-8 w-8 opacity-60" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.5" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 7.5L12 3m0 0L7.5 7.5M12 3v13.5" />
-                  </svg>
-                  <p className="mt-2 text-sm text-gray-700">
-                    Drag & drop or <span className="font-medium text-indigo-700">browse</span>
-                  </p>
-                  <p className="mt-1 text-xs text-gray-500">
-                    Only <span className="font-medium">PDF</span>, max size <span className="font-medium">2 MB</span>.
-                  </p>
-                </>
-              ) : (
-                <div className="text-sm text-gray-700">
-                  Attachment selected. You can change it by going <span className="font-medium">Back</span> to this step.
-                </div>
-              )}
-
-              {/* Lock overlay */}
-              {file && (
-                <div className="pointer-events-none absolute inset-0 grid place-items-center">
-                  <div className="rounded-md bg-gray-900/70 px-3 py-1.5 text-xs font-semibold text-white">
-                    Locked — go Back to change
-                  </div>
-                </div>
-              )}
+              <svg className="h-8 w-8 opacity-70" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.5" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 7.5L12 3m0 0L7.5 7.5M12 3v13.5" />
+              </svg>
+              <p className="mt-2 text-sm text-gray-800 dark:text-gray-200">
+                Drag & drop or <span className="font-semibold text-indigo-600 dark:text-indigo-400">browse</span>
+              </p>
+              <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">PDF or image files are supported.</p>
             </div>
 
             {file && (
-              <div className="items-center justify-between">
+              <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
                 <div className="sm:col-span-2">
                   <div className={`${panelCard} p-4`}>
                     <div className="text-sm font-semibold text-gray-900 dark:text-white">Selected File</div>
@@ -812,6 +761,18 @@ export default function AdminAddCertificate() {
                     </div>
                   </div>
                 </div>
+
+                <div className={`${panelCard} p-2`}>
+                  <div className="aspect-[4/3] w-full overflow-hidden rounded-xl">
+                    {isImage(file?.type) && filePreview ? (
+                      <img src={filePreview} alt="Preview" className="h-full w-full object-cover" />
+                    ) : (
+                      <div className="flex h-full w-full items-center justify-center text-xs text-gray-500 dark:text-gray-400">
+                        {file?.type?.includes("pdf") ? "PDF selected" : "No image preview"}
+                      </div>
+                    )}
+                  </div>
+                </div>
               </div>
             )}
 
@@ -819,14 +780,14 @@ export default function AdminAddCertificate() {
               <button
                 type="button"
                 onClick={goBack}
-                className="inline-flex items-center justify-center rounded-md border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50"
+                className="inline-flex items-center justify-center rounded-lg border border-white/20 bg-white/60 px-4 py-2 text-sm font-medium text-gray-800 transition hover:bg-white/80 dark:border-white/10 dark:bg-slate-900/40 dark:text-gray-200"
               >
                 Back
               </button>
               <button
                 type="button"
                 onClick={goNext}
-                className="inline-flex items-center justify-center rounded-md bg-indigo-600 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-indigo-700"
+                className="inline-flex items-center justify-center rounded-lg bg-gradient-to-r from-indigo-600 via-violet-600 to-cyan-500 px-4 py-2 text-sm font-semibold text-white shadow-md transition hover:brightness-110"
               >
                 Next
               </button>
@@ -861,38 +822,18 @@ export default function AdminAddCertificate() {
                     {pdaPreview || "-"}
                   </dd>
                 </div>
-
-                {/* Attachment Preview (PDF) */}
                 <div className="sm:col-span-2">
-                  <dt className="text-xs uppercase text-gray-500 dark:text-gray-400">Attachment Preview (PDF)</dt>
-                  <dd className="mt-2">
+                  <dt className="text-xs uppercase text-gray-500 dark:text-gray-400">Attachment</dt>
+                  <dd className="mt-0.5 text-gray-900 dark:text-gray-100">
                     {file ? (
-                      <div className="rounded-xl border border-white/20 bg-white/60 p-3 backdrop-blur dark:border-white/10 dark:bg-slate-900/30">
-                        <div className="flex flex-col gap-3 sm:flex-row sm:items-start">
-                          {/* Thumbnail box */}
-                          <div className="w-full max-w-[220px] overflow-hidden rounded-lg border border-white/20 bg-white/70 dark:border-white/10 dark:bg-slate-900/40">
-                            <div className="grid h-40 w-full place-items-center text-xs text-gray-600 dark:text-gray-300">
-                              PDF selected
-                            </div>
-                          </div>
-                          {/* Meta */}
-                          <div className="min-w-0 flex-1">
-                            <div className="break-words text-sm font-medium text-gray-900 dark:text-gray-100">
-                              {file.name}
-                            </div>
-                            <div className="mt-1 text-xs text-gray-600 dark:text-gray-300">
-                              {(file.size / 1024).toFixed(1)} KB • {file.type || "file"}
-                            </div>
-                            {fileHashHex && (
-                              <div className="mt-2 break-all font-mono text-[11px] text-gray-700 dark:text-gray-300">
-                                SHA-256: {fileHashHex}
-                              </div>
-                            )}
-                            <div className="mt-3 inline-flex items-center rounded-md border border-amber-400/40 bg-amber-500/10 px-2.5 py-1 text-xs font-medium text-amber-700">
-                              Read-only in Review — go <span className="mx-1 font-semibold">Back</span> to change.
-                            </div>
-                          </div>
-                        </div>
+                      <div>
+                        {file.name} • {(file.size / 1024).toFixed(1)} KB • {file.type || "file"}
+                        {fileHashHex && (
+                          <>
+                            <br />
+                            <span className="break-all font-mono text-xs">SHA-256: {fileHashHex}</span>
+                          </>
+                        )}
                       </div>
                     ) : (
                       <span className="text-gray-500 dark:text-gray-400">None</span>
