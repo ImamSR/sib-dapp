@@ -5,8 +5,7 @@ import { ConnectionProvider, WalletProvider } from "@solana/wallet-adapter-react
 import { WalletModalProvider } from "@solana/wallet-adapter-react-ui";
 import { PhantomWalletAdapter } from "@solana/wallet-adapter-wallets";
 import { Routes, Route, Navigate } from "react-router-dom";
-
-// Detect Wallet Standard wallets (incl. Phantom via standard)
+import { getRpcEndpoint } from "../lib/rpc";
 import { getWallets } from "@wallet-standard/app";
 
 import TopNav from "./components/TopNav.jsx";
@@ -45,7 +44,7 @@ export default function App() {
 
   return (
     <div style={{ backgroundColor: "darkslateblue", minHeight: "100vh" }}>
-      <ConnectionProvider endpoint={RPC} config={{ commitment: "confirmed" }}>
+      <ConnectionProvider endpoint={getRpcEndpoint()} config={{ commitment: "confirmed" }}>
         <WalletProvider wallets={wallets} autoConnect>
           <WalletModalProvider>
             <TopNav />
