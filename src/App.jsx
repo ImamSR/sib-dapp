@@ -5,7 +5,7 @@ import { ConnectionProvider, WalletProvider } from "@solana/wallet-adapter-react
 import { WalletModalProvider } from "@solana/wallet-adapter-react-ui";
 import { PhantomWalletAdapter } from "@solana/wallet-adapter-wallets";
 import { Routes, Route, Navigate } from "react-router-dom";
-import { getRpcEndpoint } from "../lib/rpc";
+import { getRpcEndpoint } from "./lib/rpc.js";
 import { getWallets } from "@wallet-standard/app";
 
 import TopNav from "./components/TopNav.jsx";
