@@ -1,26 +1,10 @@
 {
-  "builds": [
+  "rewrites": [
     {
-      "src": "api/**/*.ts",
-      "use": "@vercel/node"
-    },
-    {
-      "src": "vite.config.js",
-      "use": "@vercel/static-build"
+      "source": "/(.*)",
+      "destination": "/index.html"
     }
   ],
-  "routes": [
-    {
-      "src": "/api/(.*)",
-      "dest": "/api/$1"
-    },
-    {
-      "src": "/(.*)",
-      "dest": "/index.html"
-    }
-  ],
-  "devCommand": "vite --host --port $PORT",
-  "buildCommand": "npm run build",
   "env": {
     "NODE_OPTIONS": "--max-http-header-size=1048576"
   }
