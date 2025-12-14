@@ -27,7 +27,9 @@ export default function TopNav() {
     if (lsKey && isAdmin) {
       try {
         localStorage.setItem(lsKey, "1");
-      } catch {}
+      } catch {
+        // ignore storage errors
+      }
     }
   }, [lsKey, isAdmin]);
 

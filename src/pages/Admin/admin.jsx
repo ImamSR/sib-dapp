@@ -11,6 +11,8 @@ import * as XLSX from "xlsx";
 import { useAdmin } from "../../hooks/useAdmin";
 import { uploadFileToIpfsViaApi, toGatewayUrl } from "../../lib/ipfs";
 
+import { Buffer } from "buffer";
+
 const RPC = import.meta.env.VITE_RPC_URL || "https://api.devnet.solana.com";
 const connection = new web3.Connection(RPC, "confirmed");
 

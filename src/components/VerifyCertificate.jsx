@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, useCallback } from "react";
 import { Html5Qrcode, Html5QrcodeSupportedFormats } from "html5-qrcode";
 import { Program, AnchorProvider, web3 } from "@coral-xyz/anchor";
 import idl from "../idl/sib.json";
@@ -46,7 +46,7 @@ export default function VerifyCertificate() {
   // serialize ops to avoid transition errors
   const opQueue = useRef(Promise.resolve());
   const runSerial = (fn) =>
-    (opQueue.current = opQueue.current.then(fn).catch(() => {}));
+    (opQueue.current = opQueue.current.then(fn).catch(() => { }));
 
   const scanRegionId = "qr-region";
   const fileRegionId = "qr-file-region";
@@ -74,7 +74,7 @@ export default function VerifyCertificate() {
     return back?.id || devices[devices.length - 1]?.id || "";
   };
 
-  const handleDecodedText = async (decodedText) => {
+  const handleDecodedText = useCallback(async (decodedText) => {
     setBusy(true);
     setError("");
     setData(null);
@@ -90,7 +90,7 @@ export default function VerifyCertificate() {
     } finally {
       setBusy(false);
     }
-  };
+  }, [program]);
 
   // enumerate cameras on camera mode
   useEffect(() => {
@@ -131,7 +131,7 @@ export default function VerifyCertificate() {
 
   // start/stop camera (serialized)
   useEffect(() => {
-    if (!camId){
+    if (!camId) {
       if (cams.length > 0) setError("No camera Selected.");
       return;
     }
@@ -145,8 +145,8 @@ export default function VerifyCertificate() {
       if (camQrRef.current?.isScanning) await camQrRef.current.stop();
       if (!camQrRef.current)
         camQrRef.current = new Html5Qrcode(scanRegionId, { verbose: false });
-      try { await camQrRef.current?.stop(); } catch {}
-      try { await camQrRef.current?.clear(); } catch {}
+      try { await camQrRef.current?.stop(); } catch { /* ignore */ }
+      try { await camQrRef.current?.clear(); } catch { /* ignore */ }
       if (!camQrRef.current) {
         camQrRef.current = new Html5Qrcode(scanRegionId, { verbose: false });
       } else {
@@ -163,12 +163,12 @@ export default function VerifyCertificate() {
       const onSuccess = async (decodedText) => {
         try {
           if (camQrRef.current?.isScanning) await camQrRef.current.stop();
-          try { await camQrRef.current?.stop(); } catch {}
-        } catch {}
+          try { await camQrRef.current?.stop(); } catch { /* ignore */ }
+        } catch { /* ignore */ }
         setIsRunning(false);
         await handleDecodedText(decodedText);
       };
-      const onFailure = () => {};
+      const onFailure = () => { };
 
       localStorage.setItem(LS_CAMERA_KEY, camId);
 
@@ -199,13 +199,13 @@ export default function VerifyCertificate() {
       runSerial(async () => {
         if (camQrRef.current?.isScanning) await camQrRef.current.stop();
         if (camQrRef.current) await camQrRef.current.clear();
-        try { await camQrRef.current?.stop(); } catch {}
-        try { await camQrRef.current?.clear(); } catch {}
+        try { await camQrRef.current?.stop(); } catch { /* ignore */ }
+        try { await camQrRef.current?.clear(); } catch { /* ignore */ }
         camQrRef.current = null;
         setIsRunning(false);
       });
     };
-  }, [mode, camId, startNonce]);
+  }, [mode, camId, startNonce, cams.length, handleDecodedText]); // Added cams.length per lint
 
   // file mode helpers
   const clearFilePreview = () =>
@@ -213,7 +213,7 @@ export default function VerifyCertificate() {
       if (fileQrRef.current) {
         try {
           await fileQrRef.current.clear();
-        } catch {}
+        } catch { /* ignore */ }
         fileQrRef.current = null;
       }
     });
@@ -234,7 +234,7 @@ export default function VerifyCertificate() {
         } else {
           try {
             await fileQrRef.current.clear();
-          } catch {}
+          } catch { /* ignore */ }
           fileQrRef.current = new Html5Qrcode(fileRegionId, { verbose: false });
         }
 
@@ -305,7 +305,7 @@ export default function VerifyCertificate() {
     if (!scannedAddr) return;
     try {
       await navigator.clipboard.writeText(scannedAddr);
-    } catch {}
+    } catch { /* ignore */ }
   };
   const clearResult = () => {
     setData(null);

@@ -7,6 +7,7 @@ import { PhantomWalletAdapter } from "@solana/wallet-adapter-wallets";
 import { Routes, Route, Navigate } from "react-router-dom";
 import { getRpcEndpoint } from "./lib/rpc.js";
 import { getWallets } from "@wallet-standard/app";
+import './polyfills'
 
 import TopNav from "./components/TopNav.jsx";
 import VerifyCertificate from "./components/VerifyCertificate.jsx";
@@ -36,7 +37,7 @@ export default function App() {
 
   if (!RPC) {
     // Optional: warn once in dev if env not set
-    // eslint-disable-next-line no-console
+    // Optional: warn once in dev if env not set
     console.warn(
       "VITE_RPC_URL is not set. Define it in your .env (e.g., VITE_RPC_URL=https://api.devnet.solana.com)"
     );
@@ -48,7 +49,7 @@ export default function App() {
         <WalletProvider wallets={wallets} autoConnect>
           <WalletModalProvider>
             <TopNav />
-            <WalletSessionGuard/>
+            <WalletSessionGuard />
             <Routes>
               <Route path="/" element={<Navigate to="/verify" replace />} />
               <Route path="/verify" element={<VerifyCertificate />} />

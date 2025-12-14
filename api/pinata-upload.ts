@@ -1,66 +1,123 @@
-// api/pinata-upload.ts
-export const config = { runtime: "edge" };
+// /api/pinata-upload.ts
+import type { VercelRequest, VercelResponse } from "@vercel/node";
+import { getDb } from "./_lib/mongo.js";
 
-type PinataOk = { IpfsHash: string; PinSize?: number; Timestamp?: string };
-type PinataErr = { error?: string; message?: string; error_message?: string };
+export const config = {
+  api: {
+    bodyParser: false, // we read the raw stream ourselves
+  },
+};
 
-export default async function handler(req: Request) {
+async function readBody(req: VercelRequest): Promise<Buffer> {
+  const chunks: Buffer[] = [];
+  for await (const chunk of req) {
+    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as any));
+  }
+  return Buffer.concat(chunks);
+}
+
+export default async function handler(req: VercelRequest, res: VercelResponse) {
+  // CORS for browser dev
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, x-file-name");
+  res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
+
+  if (req.method === "OPTIONS") {
+    return res.status(200).end();
+  }
+  if (req.method !== "POST") {
+    return res.status(405).json({ error: "Method Not Allowed" });
+  }
+
   try {
-    if (req.method !== "POST") {
-      return new Response("Method Not Allowed", { status: 405 });
+    const PINATA_JWT = process.env.PINATA_JWT;
+    if (!PINATA_JWT) {
+      return res.status(500).json({ error: "Missing PINATA_JWT env var" });
     }
 
-    const jwt = process.env.PINATA_JWT;
-    if (!jwt) return new Response("PINATA_JWT is missing", { status: 500 });
+    const buf = await readBody(req);
+    if (!buf?.length) {
+      return res.status(400).json({ error: "Empty body (0 bytes)" });
+    }
 
-    const gateway =
-      (process.env.IPFS_GATEWAY || "https://gateway.pinata.cloud/ipfs/")
-        .replace(/\/+$/, "") + "/";
+    const fileNameHeader = (req.headers["x-file-name"] as string) || `upload-${Date.now()}.bin`;
+    const fileName = decodeURIComponent(fileNameHeader);
 
-    // Read the raw bytes from the client (we'll wrap them into FormData)
-    const blob = await req.blob();
-
-    // Build the multipart form that Pinata expects:
-    // - field name MUST be "file"
-    // - pinataMetadata and pinataOptions may be JSON strings (or JSON blobs)
     const form = new FormData();
-    form.append("file", blob, "upload.bin");
-    form.append("pinataMetadata", JSON.stringify({ name: `cert-${Date.now()}` }));
+    form.append("file", new Blob([buf as any]), fileName);
+    form.append("pinataMetadata", JSON.stringify({ name: fileName }));
     form.append("pinataOptions", JSON.stringify({ cidVersion: 1 }));
 
     const pinataRes = await fetch("https://api.pinata.cloud/pinning/pinFileToIPFS", {
       method: "POST",
-      headers: { Authorization: `Bearer ${jwt}` },
+      headers: {
+        Authorization: `Bearer ${PINATA_JWT}`,
+        // ❗ DO NOT set Content-Type – fetch + FormData will handle boundary
+      },
       body: form,
     });
 
-    // If Pinata returns an error, include their message so debugging is easy
+    const bodyText = await pinataRes.text();
+
     if (!pinataRes.ok) {
-      let detail = await pinataRes.text();
-      // try to pretty print if it's JSON
-      try {
-        const j = JSON.parse(detail) as PinataErr;
-        detail = j.error || j.message || j.error_message || detail;
-      } catch {}
-      return new Response(
-        JSON.stringify({ error: detail || "Pinata upload failed" }),
-        { status: pinataRes.status, headers: { "content-type": "application/json" } }
-      );
+      // Surface Pinata error to frontend so you can see it
+      return res.status(500).json({
+        error: "Pinata error",
+        status: pinataRes.status,
+        body: bodyText,
+      });
     }
 
-    // Type the JSON so TS knows IpfsHash exists
-    const json = (await pinataRes.json()) as PinataOk;
-    const cid = json.IpfsHash;
+    let data: any;
+    try {
+      data = JSON.parse(bodyText);
+    } catch {
+      return res.status(500).json({
+        error: "Unexpected Pinata response (not JSON)",
+        body: bodyText,
+      });
+    }
 
-    return new Response(
-      JSON.stringify({
-        cid,
-        ipfsUri: `ipfs://${cid}`,
-        gatewayUrl: `${gateway}${cid}`,
-      }),
-      { status: 200, headers: { "content-type": "application/json" } }
-    );
+    const cid: string = data.IpfsHash;
+    const gwBase =
+      (process.env.IPFS_GATEWAY || "https://gateway.pinata.cloud/ipfs/")
+        .replace(/\/+$/, "") + "/";
+
+    // --- MongoDB Save (Hybrid Storage) ---
+    const pda = req.headers["x-pda"];
+    if (pda && typeof pda === "string") {
+      try {
+        const db = await getDb(process.env.MONGODB_DB || "sib");
+        const coll = db.collection("certs");
+        await coll.updateOne(
+          { pda },
+          {
+            $set: {
+              cid,
+              filename: fileName,
+              updatedAt: new Date()
+            },
+            $setOnInsert: { createdAt: new Date() }
+          },
+          { upsert: true }
+        );
+
+      } catch (dbErr) {
+        console.error("[pinata-upload] ⚠️ Failed to save to Mongo:", dbErr);
+        // We do NOT fail the request, just log it. The file is on IPFS.
+      }
+    }
+    // -------------------------------------
+
+    return res.status(200).json({
+      cid,
+      ipfsUri: `ipfs://${cid}`,
+      gatewayUrl: `${gwBase}${cid}`,
+    });
   } catch (e: any) {
-    return new Response(e?.message || "Internal Error", { status: 500 });
+
+    return res.status(500).json({
+      error: e?.message || String(e),
+    });
   }
 }

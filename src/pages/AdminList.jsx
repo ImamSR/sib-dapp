@@ -4,7 +4,7 @@ import { useWallet } from "@solana/wallet-adapter-react";
 import { AnchorProvider, Program, web3 } from "@coral-xyz/anchor";
 import idl from "../idl/sib.json";
 
-const programID = new web3.PublicKey("HqJ3a7UwwxjorwDJUYMAWBC8Q4fRzqF47Pgq5fjr3D1F");
+
 const connection = new web3.Connection("https://api.devnet.solana.com", "confirmed");
 
 function toDate(i64) {

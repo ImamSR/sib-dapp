@@ -27,3 +27,13 @@ export default defineConfig([
     },
   },
 ])
+  .concat([
+    {
+      files: ['api/**/*.js', 'scripts/**/*.js'],
+      languageOptions: {
+        globals: {
+          ...globals.node,
+        },
+      },
+    }
+  ])

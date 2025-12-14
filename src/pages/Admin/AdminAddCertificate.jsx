@@ -9,11 +9,13 @@ import { QRCodeCanvas } from "qrcode.react";
 import * as XLSX from "xlsx";
 
 import { useAdmin } from "../../hooks/useAdmin";
-import { uploadFileToIpfsViaVercel, toGatewayUrl } from "../../lib/ipfs-vercel";
+import { uploadFileToIpfsViaVercel } from "../../lib/ipfs-vercel"; // ⬅ keep single uploader
+import { saveCertMetaToApi } from "../../lib/save-to-offchain";   // ⬅ metadata saver
+
+import { Buffer } from "buffer";
 
 const RPC = import.meta.env.VITE_RPC_URL || "https://api.devnet.solana.com";
 const connection = new web3.Connection(RPC, "confirmed");
-// Use the address embedded in your IDL
 const PROGRAM_ID = new web3.PublicKey(idl.address);
 
 const shorten = (k) => (k ? `${k.slice(0, 4)}…${k.slice(-4)}` : "");
@@ -36,11 +38,28 @@ const isPdfFile = (f) => {
 export default function AdminAddCertificate() {
   const wallet = useWallet();
 
+  // Create a clean "AnchorWallet" object to avoid StandardWalletAdapter proxy issues
+  const anchorWallet = useMemo(() => {
+    if (
+      !wallet ||
+      !wallet.publicKey ||
+      !wallet.signTransaction ||
+      !wallet.signAllTransactions
+    ) {
+      return null;
+    }
+    return {
+      publicKey: wallet.publicKey,
+      signTransaction: wallet.signTransaction,
+      signAllTransactions: wallet.signAllTransactions,
+    };
+  }, [wallet]);
+
   // Provider/Program (memoized)
   const provider = useMemo(() => {
-    if (!wallet) return null;
-    return new AnchorProvider(connection, wallet, { commitment: "confirmed" });
-  }, [wallet]);
+    if (!anchorWallet) return null;
+    return new AnchorProvider(connection, anchorWallet, { commitment: "confirmed" });
+  }, [anchorWallet]);
 
   const program = useMemo(() => {
     if (!provider) return null;
@@ -102,15 +121,14 @@ export default function AdminAddCertificate() {
   async function sha256FileHex(f) {
     const buf = await f.arrayBuffer();
     const hash = await crypto.subtle.digest("SHA-256", buf);
-    return Array.from(new Uint8Array(hash))
+    const fullHex = Array.from(new Uint8Array(hash))
       .map((b) => b.toString(16).padStart(2, "0"))
       .join("");
+
+    // ✅ Return only first 16 chars (8 bytes) instead of 64
+    return fullHex.slice(0, 16); // "abc123def456..." instead of full 64-char hash
   }
-  async function sha256FileBytes(f) {
-    const buf = await f.arrayBuffer();
-    const hash = await crypto.subtle.digest("SHA-256", buf);
-    return new Uint8Array(hash);
-  }
+
 
   // ===== File pick with validation (PDF only, <= 2MB) =====
   async function onPickFile(f) {
@@ -135,7 +153,6 @@ export default function AdminAddCertificate() {
     setError("");
     setFile(f);
 
-    // Compute hash (non-blocking UI)
     try {
       const hex = await sha256FileHex(f);
       setFileHashHex(hex);
@@ -151,7 +168,6 @@ export default function AdminAddCertificate() {
   };
   const onDragOver = (e) => e.preventDefault();
 
-  // form changes
   const onChange = (e) => {
     const { name, value } = e.target;
     setForm((f) => ({ ...f, [name]: value }));
@@ -193,7 +209,7 @@ export default function AdminAddCertificate() {
     setStep((s) => Math.max(0, s - 1));
   };
 
-  // ---- SUBMIT (IPFS + on-chain)
+  // ---- SUBMIT (on-chain blank + IPFS + Mongo)
   async function handleSubmit() {
     setError("");
     setSuccessMsg("");
@@ -205,24 +221,10 @@ export default function AdminAddCertificate() {
       if (!isAdmin) throw new Error("Not authorized (wallet is not admin)");
       if (!adminPda) throw new Error("Admin PDA not available");
 
-      // Re-validate file (safety)
+      // validate file (again)
       if (file) {
         if (!isPdfFile(file)) throw new Error("Attachment must be a PDF.");
         if (file.size > MAX_PDF_BYTES) throw new Error("Attachment exceeds 2 MB.");
-      }
-
-      // prepare file hash bytes (zeros if no file)
-      let fileHashBytes = new Uint8Array(32); // default zeros
-      let ipfsUri = "";
-      let gatewayUrl = "";
-
-      if (file && file.size) {
-        fileHashBytes = await sha256FileBytes(file);
-
-        // Upload to IPFS (via your vercel route)
-        const up = await uploadFileToIpfsViaVercel(file);
-        ipfsUri = up.ipfsUri;        // ipfs://CID (stored on-chain)
-        gatewayUrl = up.gatewayUrl;  // https link for UI
       }
 
       // derive cert PDA
@@ -231,7 +233,8 @@ export default function AdminAddCertificate() {
         PROGRAM_ID
       );
 
-      // call program
+      // 1) On-chain tx WITHOUT file pointer/hash
+      const zeroHash = new Array(32).fill(0);
       await program.methods
         .addCertificate(
           form.program_studi,
@@ -241,8 +244,8 @@ export default function AdminAddCertificate() {
           form.nama,
           String(form.nomor_ijazah),
           form.operator_name,
-          ipfsUri,                    // ipfs://CID
-          Array.from(fileHashBytes)   // 32 bytes
+          "",        // empty URI
+          zeroHash   // zeroed hash
         )
         .accounts({
           certificate: certPda,
@@ -252,13 +255,44 @@ export default function AdminAddCertificate() {
         })
         .rpc();
 
+      // 2) If a file was selected: upload to IPFS via Vercel, then save to Mongo
+      let ipfsCid = "";
+      let ipfsUri = "";
+      let gatewayUrl = "";
+
+      if (file && file.size) {
+        const up = await uploadFileToIpfsViaVercel(file);
+        ipfsCid = up.cid;
+        ipfsUri = up.ipfsUri;
+        gatewayUrl = up.gatewayUrl || "";
+
+        // Save with shortened hash
+        await saveCertMetaToApi({
+          pda: certPda.toBase58(),
+          nomor_ijazah: String(form.nomor_ijazah),
+          cid: ipfsCid,
+          filename: file.name,
+          sha256: fileHashHex || "", // Now 16 chars instead of 64
+          operator: wallet.publicKey.toBase58(),
+        });
+      }
+
+      // Update UI
       setPda(certPda);
-      setFileUriSaved(ipfsUri);
-      setFileUrlGateway(gatewayUrl || toGatewayUrl(ipfsUri));
       setSuccessMsg("Certificate saved to Solana 🎉");
+      if (ipfsUri) {
+        setFileUriSaved(ipfsUri);
+        setFileUrlGateway(gatewayUrl);
+      }
       setStep(2);
     } catch (e2) {
-      setError(e2.message || "Failed to save the certificate.");
+      console.error("Submit error details:", e2);
+      // Try to extract useful message from various error types
+      let msg = e2.message;
+      if (!msg && e2.toString) msg = e2.toString();
+      if (msg === "[object Object]") msg = "Unexpected error (check console)";
+
+      setError(msg || "Failed to save the certificate.");
     } finally {
       setIsSubmitting(false);
     }
@@ -489,8 +523,8 @@ export default function AdminAddCertificate() {
                 i === step
                   ? "border-indigo-400/60 bg-indigo-500/10 text-indigo-700 dark:text-indigo-300"
                   : i < step
-                  ? "border-emerald-400/50 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300"
-                  : "border-white/20 bg-white/40 text-gray-600 dark:border-white/10 dark:bg-slate-900/40 dark:text-gray-300",
+                    ? "border-emerald-400/50 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300"
+                    : "border-white/20 bg-white/40 text-gray-600 dark:border-white/10 dark:bg-slate-900/40 dark:text-gray-300",
               ].join(" ")}
             >
               <span
@@ -499,8 +533,8 @@ export default function AdminAddCertificate() {
                   i === step
                     ? "bg-indigo-600 text-white"
                     : i < step
-                    ? "bg-emerald-600 text-white"
-                    : "bg-gray-300 text-gray-800 dark:bg-slate-700 dark:text-white",
+                      ? "bg-emerald-600 text-white"
+                      : "bg-gray-300 text-gray-800 dark:bg-slate-700 dark:text-white",
                 ].join(" ")}
               >
                 {i + 1}

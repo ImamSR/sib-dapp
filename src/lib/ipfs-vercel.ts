@@ -1,31 +1,49 @@
-const GATEWAY =
-  (import.meta.env.VITE_IPFS_GATEWAY || "https://gateway.pinata.cloud/ipfs/")
-    .replace(/\/+$/, "") + "/";
+export function toGatewayUrl(ipfsUriOrCid: string) {
+  const BASE =
+    (import.meta.env.VITE_IPFS_GATEWAY ||
+      "https://gateway.pinata.cloud/ipfs/")
+      .replace(/\/+$/, "") + "/";
 
-// RELATIVE by default, so Vite proxy + Vercel both work
-const UPLOAD_ENDPOINT =
-  import.meta.env.VITE_UPLOAD_ENDPOINT || "/api/pinata-upload";
+  const cid = ipfsUriOrCid.startsWith("ipfs://")
+    ? ipfsUriOrCid.slice(7)
+    : ipfsUriOrCid;
 
-// src/lib/ipfs-vercel.ts
-export async function uploadFileToIpfsViaVercel(file: File | Blob) {
-  const endpoint = import.meta.env.VITE_UPLOAD_ENDPOINT || "/api/pinata-upload";
-  const buf = await (file as File).arrayBuffer();
-  const resp = await fetch(endpoint, {
-    method: "POST",
-    headers: { "content-type": "application/octet-stream" },
-    body: buf,
-  });
-  if (!resp.ok) throw new Error(await resp.text());
-  return resp.json() as Promise<{ cid: string; ipfsUri: string; gatewayUrl: string }>;
+  const token = (import.meta.env.VITE_PINATA_GATEWAY_TOKEN || "").trim();
+  const url = `${BASE}${cid}`;
+  return token
+    ? `${url}?pinataGatewayToken=${encodeURIComponent(token)}`
+    : url;
 }
 
+// src/lib/ipfs-vercel.ts
+export async function uploadFileToIpfsViaVercel(file: File, pda?: string) {
+  if (!file) throw new Error("File is required");
 
+  const endpoint =
+    import.meta.env.VITE_UPLOAD_ENDPOINT || "/api/pinata-upload";
 
-export function toGatewayUrl(uri: string) {
-  if (!uri) return "";
-  if (uri.startsWith("ipfs://")) {
-    const cid = uri.slice("ipfs://".length);
-    return `${GATEWAY}${cid}`;
+  const arrayBuf = await file.arrayBuffer();
+
+  const headers: Record<string, string> = {
+    "Content-Type": "application/octet-stream",
+    "x-file-name": encodeURIComponent(file.name),
+  };
+  if (pda) {
+    headers["x-pda"] = pda;
   }
-  return uri;
+
+  const res = await fetch(endpoint, {
+    method: "POST",
+    headers,
+    body: arrayBuf,
+  });
+
+  const txt = await res.text();
+  if (!res.ok) {
+    console.error("[Frontend-IPFS] ❌ Upload failed", res.status, "-", txt);
+    throw new Error(`Upload failed: ${res.status} - ${txt.slice(0, 500)}`);
+  }
+
+
+  return JSON.parse(txt);
 }

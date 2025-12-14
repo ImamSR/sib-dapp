@@ -7,6 +7,8 @@
     "dev": "vite",
     "build": "vite build",
     "lint": "eslint .",
+    "dev:fix": "VERCEL_OIDC_TOKEN=removed NODE_OPTIONS='--max-http-header-size=1048576' vercel dev",
+    "dev:custom": "node server.js & vite",
     "preview": "vite preview"
   },
   "dependencies": {
@@ -17,12 +19,20 @@
     "@solana/wallet-adapter-wallets": "^0.19.37",
     "@solana/web3.js": "^1.98.4",
     "axios": "^1.12.2",
-    "form-data": "^4.0.4",
+    "buffer": "^6.0.3",
+    "crypto-browserify": "^3.12.1",
+    "dotenv": "^17.2.3",
+    "form-data": "^4.0.5",
+    "formidable": "^3.5.4",
     "html5-qrcode": "^2.3.8",
+    "mongodb": "^7.0.0",
+    "process": "^0.11.10",
     "qrcode.react": "^4.2.0",
     "react": "^19.1.1",
     "react-dom": "^19.1.1",
     "react-router-dom": "^7.8.2",
+    "stream-browserify": "^3.0.0",
+    "util": "^0.12.5",
     "vercel": "^48.2.0",
     "xlsx": "^0.18.5"
   },
@@ -41,6 +51,8 @@
     "globals": "^16.3.0",
     "postcss": "^8.5.6",
     "tailwindcss": "^4.1.12",
-    "vite": "^7.1.2"
+    "typescript": "^5.9.3",
+    "vite": "^7.1.2",
+    "vite-plugin-node-polyfills": "^0.24.0"
   }
 }
