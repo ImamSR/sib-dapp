@@ -1,8 +1,8 @@
 // /api/certs/[pda].js
 import { getDb } from "../_lib/mongo.js";
 
-const GATEWAY =
-  (process.env.IPFS_GATEWAY || "https://gateway.pinata.cloud/ipfs/").replace(/\/+$/, "") + "/";
+const rawGw = process.env.IPFS_GATEWAY || "https://gateway.pinata.cloud/ipfs/";
+const GATEWAY = (rawGw.startsWith("http") ? rawGw : `https://${rawGw}`).replace(/\/+$/, "") + "/";
 
 // Basic CORS for local dev
 function setCors(res, req) {

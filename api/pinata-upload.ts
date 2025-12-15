@@ -79,9 +79,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }
 
     const cid: string = data.IpfsHash;
-    const gwBase =
-      (process.env.IPFS_GATEWAY || "https://gateway.pinata.cloud/ipfs/")
-        .replace(/\/+$/, "") + "/";
+    const rawGw = process.env.IPFS_GATEWAY || "https://gateway.pinata.cloud/ipfs/";
+    const gwBase = (rawGw.startsWith("http") ? rawGw : `https://${rawGw}`).replace(/\/+$/, "") + "/";
 
     // --- MongoDB Save (Hybrid Storage) ---
     const pda = req.headers["x-pda"];
